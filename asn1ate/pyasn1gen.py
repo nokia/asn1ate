@@ -91,7 +91,9 @@ class Pyasn1Backend(object):
 
         self.decl_generators = {
             TypeAssignment: self.decl_type_assignment,
-            ValueAssignment: self.decl_value_assignment
+            ValueAssignment: self.decl_value_assignment,
+            ClassInstanceAssignment: self.decl_class_instance_assignment,
+            ClassInstanceInlinedListAssignment: self.decl_class_instance_inlined_list_assignment,
         }
 
         self.defn_generators = {
@@ -106,6 +108,9 @@ class Pyasn1Backend(object):
             DefinedType: self.defn_defined_type,
             ValueListType: self.defn_value_list_type,
             BitStringType: self.defn_bitstring_type,
+            ClassType: self.defn_class_type,
+            ClassInstanceInlinedList: self.defn_class_instance_inlined_list,
+            ClassInstance: self.defn_class_instance,
         }
 
         self.inline_generators = {
@@ -122,7 +127,10 @@ class Pyasn1Backend(object):
             SequenceType: self.inline_constructed_type,
             SetType: self.inline_constructed_type,
             BitStringType: self.inline_bitstring_type,
+            ClassComponentType: self.inline_class_element_type,
         }
+
+        self.class_syntax_map = dict()
 
     def generate_code(self):
         self.writer.write_line('from pyasn1.type import univ, char, namedtype, namedval, tag, constraint, useful')
@@ -166,7 +174,7 @@ class Pyasn1Backend(object):
         return lines
 
     def generate_definition(self, assignment):
-        if not isinstance(assignment, (ValueAssignment, TypeAssignment)):
+        if not isinstance(assignment, (ValueAssignment, TypeAssignment, ClassInstanceAssignment, ClassInstanceInlinedListAssignment)):
             raise Exception('Unexpected assignment type %s' % assignment.__class__.__name__)
 
         if isinstance(assignment, ValueAssignment):
@@ -217,6 +225,12 @@ class Pyasn1Backend(object):
 
         return '%s = %s' % (assigned_value, construct_expr)
 
+    def decl_class_instance_assignment(self, assignment):
+        return ''
+
+    def decl_class_instance_inlined_list_assignment(self, assignment):
+        return ''
+
     def defn_simple_type(self, class_name, t):
         if t.constraint:
             return '%s.subtypeSpec = %s' % (class_name, self.build_constraint_expr(t.constraint))
@@ -236,6 +250,67 @@ class Pyasn1Backend(object):
         fragment.write_line(')')
 
         return str(fragment)
+
+    def defn_class_type(self, class_name, t):
+        fragment = self.writer.get_fragment()
+
+        unique_comp = None
+        for c in t.components:
+            assigned_type = _translate_type(c.type_name)
+            try:
+                base_type = _translate_type(c.type_decl.type_name)
+            except AttributeError:
+                base_type = 'univ.AnyType'
+
+            fragment.write_line('class %s(%s):' % (assigned_type, base_type))
+            fragment.push_indent()
+            fragment.write_line('pass')
+            fragment.pop_indent()
+            fragment.write_blanks(2)
+
+            if c.unique_flag == True:
+                unique_comp = assigned_type
+
+        if unique_comp is None:
+            unique_comp = _translate_type(t.components[0].type_name)
+
+        fragment.write_line('%s.setUniqueKey(%s)' % (class_name, unique_comp))
+        fragment.write_blanks(2)
+
+        syntax_map = dict()
+        for k in t.syntax_map:
+            syntax_map[k] = _sanitize_identifier('%s.%s' % (class_name, t.syntax_map[k]))
+        self.class_syntax_map[class_name] = syntax_map
+
+        return str(fragment)
+
+    def defn_class_instance(self, class_name, t):
+        fragment = self.writer.get_fragment()
+        fragment.write_line('%s.addInstance({' % class_name)
+        fragment.push_indent()
+
+        try:
+            for k, v in t.components.items():
+                k = self.class_syntax_map[class_name][k]
+                type_decl = self.sema_module.get_type_decl(_unsanitize_identifier(k))
+                if not (v in self.assignments_by_name or v in self.imported_identifiers):
+                    v = "'%s'" % v
+                else:
+                    v = self.translate_value(v)
+                fragment.write_line("'%s': %s(%s)," % (k, k, v))
+        except KeyError:
+            raise KeyError("%s => %s" % (class_name, t))
+
+        fragment.pop_indent()
+        fragment.write_line('})')
+        fragment.write_blanks(2)
+        return str(fragment)
+
+    def defn_class_instance_inlined_list(self, class_name, t):
+        result = ''
+        for c in t.components:
+            result += self.generate_defn(class_name, c)
+        return result
 
     def defn_tagged_type(self, class_name, t):
         fragment = self.writer.get_fragment()
@@ -335,6 +410,15 @@ class Pyasn1Backend(object):
         fragment.write_line('))')
 
         return str(fragment)
+
+    def inline_class_element_type(self, t):
+        assigned_type = _translate_type(t.type_name)
+        try:
+            base_type = _translate_type(t.type_decl.type_name)
+        except AttributeError:
+            base_type = 'univ.AnyType'
+
+        return "namedtype.NamedType('%s', %s())" % (assigned_type, base_type)
 
     def inline_component_types(self, components):
         fragment = self.writer.get_fragment()
@@ -609,6 +693,7 @@ _ASN1_BUILTIN_TYPES = {
     'BMPString': 'char.BMPString',
     'T61String': 'char.T61String',
     'VideotexString': 'char.VideotexString',
+    'CLASS': 'univ.ClassInstanceList',
 }
 
 
@@ -646,6 +731,7 @@ def _sanitize_identifier(name):
     name = name.replace('-', '_')
     if name in keyword.kwlist:
         name += '_'
+    name = name.replace('.&', '__')
 
     return name
 

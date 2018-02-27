@@ -253,6 +253,7 @@ class SemaNode(object):
 class Module(SemaNode):
     def __init__(self, elements):
         self._user_types = {}
+        self._user_class_types = {}
 
         module_reference, definitive_identifier, tag_default, extension_default, module_body = elements
 
@@ -280,9 +281,12 @@ class Module(SemaNode):
             # Index all type assignments by name
             type_assignments = [a for a in self.assignments if isinstance(a, TypeAssignment)]
             for user_defined in type_assignments:
-                self._user_types[user_defined.type_name] = user_defined.type_decl
-
-        return self._user_types
+                if isinstance(user_defined.type_decl, ClassType):
+                    for component in user_defined.type_decl.components:
+                        self._user_class_types[component.type_name] = component.type_decl
+                else:
+                    self._user_types[user_defined.type_name] = user_defined.type_decl
+        return (self._user_types, self._user_class_types)
 
     def resolve_type_decl(self, type_decl, referenced_modules):
         """ Recursively resolve user-defined types to their built-in
@@ -302,10 +306,12 @@ class Module(SemaNode):
                 raise Exception('Unrecognized referenced module %s in %s.' % (type_decl.module_ref.name,
                                                                               [module.name for module in
                                                                                referenced_modules]))
-            user_types = module.user_types()
+            user_types, user_class_types = module.user_types()
             ref_type_decl = None
             if type_decl.type_name in user_types:
                 ref_type_decl = user_types[type_decl.type_name]
+            elif type_decl.type_name in user_class_types:
+                ref_type_decl = user_class_types[type_decl.type_name]
             elif self.imports:
                 for _, imports in self.imports.imports.items():
                     if type_decl.type_name.replace('-', '_') in imports:
@@ -317,8 +323,11 @@ class Module(SemaNode):
             return type_decl
 
     def get_type_decl(self, type_name):
-        user_types = self.user_types()
-        return user_types[type_name]
+        user_types, user_class_types = self.user_types()
+        try:
+            return user_types[type_name]
+        except KeyError:
+            return user_class_types[type_name]
 
     def resolve_selection_type(self, selection_type_decl):
         if not isinstance(selection_type_decl, SelectionType):
@@ -437,8 +446,15 @@ class Assignment(SemaNode):
         This happens to coincide with all contained SemaNodes as exposed by
         ``descendants`` with a ``reference_name`` method.
         """
-        return set(d.reference_name() for d in self.descendants()
-                   if hasattr(d, 'reference_name'))
+        refs = []
+        for d in self.descendants():
+            if hasattr(d, 'reference_name'):
+                rn = d.reference_name()
+                if not isinstance(rn, list):
+                    refs.append(rn)
+                else:
+                    refs.extend(rn)
+        return set(r.split('.&')[0] for r in refs)
 
 
 class TypeAssignment(Assignment):
@@ -447,7 +463,10 @@ class TypeAssignment(Assignment):
             raise Exception('Malformed type assignment')
         type_name, _, type_decl = elements
         self.type_name = type_name
-        self.type_decl = _create_sema_node(type_decl)
+        if type_decl.elements[0].ty == 'ClassType':
+            self.type_decl = ClassType(type_name, type_decl.elements[0].elements)
+        else:
+            self.type_decl = _create_sema_node(type_decl)
 
     def reference_name(self):
         return self.type_name
@@ -470,6 +489,48 @@ class ValueAssignment(Assignment):
 
     def __str__(self):
         return '%s %s ::= %s' % (self.value_name, self.type_decl, self.value)
+
+    __repr__ = __str__
+
+
+class ClassInstanceAssignment(Assignment):
+    def __init__(self, elements):
+        value_name, type_name, _, type_decl = elements
+        self.value_name = value_name
+        self.type_name = type_name
+        self.type_decl = ClassInstance(type_decl.elements, type_name)
+
+    def reference_name(self):
+        return str(self.value_name)
+
+    def references(self):
+        refs = self.type_decl.references()
+        refs.add(self.type_name)
+        return refs
+
+    def __str__(self):
+        return '%s %s :: %s' % (self.value_name, self.type_name, self.type_decl)
+
+    __repr__ = __str__
+
+
+class ClassInstanceInlinedListAssignment(Assignment):
+    def __init__(self, elements):
+        value_name, type_name, _, components = elements
+        self.value_name = value_name
+        self.type_name = type_name
+        self.type_decl = ClassInstanceInlinedList(components.elements[0], type_name)
+
+    def reference_name(self):
+        return str(self.value_name)
+
+    def references(self):
+        refs = self.type_decl.references()
+        refs.add(self.type_name)
+        return refs
+
+    def __str__(self):
+        return '%s %s : %s' % (self.value_name, self.type_name, self.type_decl)
 
     __repr__ = __str__
 
@@ -516,6 +577,111 @@ class SequenceType(ConstructedType):
 class SetType(ConstructedType):
     def __init__(self, elements):
         super(SetType, self).__init__(elements)
+
+
+class ClassTypeSyntaxStore:
+
+    syntax = dict()
+
+    @classmethod
+    def setSyntax(cls, name, syntax):
+        cls.syntax[name] = syntax
+
+    @classmethod
+    def getSyntax(cls, name):
+        return cls.syntax[name]
+
+
+class ClassType(ConstructedType):
+    def __init__(self, id, elements):
+        type_name, component_tokens, with_syntax = elements
+        self.type_name = type_name
+        self.components = [ClassComponentType(id, token.elements) for token in component_tokens]
+
+        self.syntax_map = dict()
+        key = list()
+        while with_syntax:
+            token = with_syntax.pop(0)
+            if token.startswith('&'):
+                self.syntax_map[' '.join(key)] = token
+                key = list()
+            else:
+                key.append(token)
+
+        ClassTypeSyntaxStore.setSyntax(id, self.syntax_map)
+
+
+class ClassInstanceInlinedList(ConstructedType):
+    def __init__(self, elements, class_name):
+        self.type_name = 'CLASS_INSTANCE_LIST'
+        self.components = self._parse_components(elements, class_name)
+
+    def _parse_components(self, components, class_name):
+        instance_list = list()
+        for c in components:
+            if c.ty == 'ClassInstance':
+                instance_list.append(ClassInstance(c.elements, class_name))
+        return instance_list
+
+    def references(self):
+        refs = set()
+        for c in self.components:
+            refs = refs.union(c.references())
+        return refs
+
+    def __str__(self):
+        component_type_list = ', '.join(map(str, self.components))
+        return '%s { %s }' % (self.type_name, component_type_list)
+
+    __repr__ = __str__
+
+
+class ClassInstance(ConstructedType):
+    def __init__(self, elements, class_name):
+        self.type_name = 'CLASS_INSTANCE'
+        self.raw_components = elements
+        self.class_name = class_name
+        self.unparsed = True
+
+    def _parse_component(self):
+        syntax_map = ClassTypeSyntaxStore.getSyntax(self.class_name).keys()
+        self.components = {}
+
+        key = ''
+        while self.raw_components:
+            token = self.raw_components.pop(0)
+            if key:
+                key += ' %s' % token
+            else:
+                key = token
+
+            if key in syntax_map:
+                self.components[key] = _maybe_create_sema_node(self.raw_components.pop(0))
+                key = ''
+
+        self.unparsed = False
+
+    def __str__(self):
+        if self.unparsed:
+            self._parse_component()
+        component_type_list = ', '.join(['%s => %s' % x for x in self.components.items()])
+        return '%s { %s }' % (self.type_name, component_type_list)
+
+    def auto_tag(self):
+        pass
+
+    def references(self):
+        if self.unparsed:
+            self._parse_component()
+
+        refs = []
+        for val in self.components.values():
+            refs.append(val)
+        refs = set(refs)
+
+        return refs
+
+    __repr__ = __str__
 
 
 class CollectionType(SemaNode):
@@ -757,6 +923,40 @@ class ComponentType(SemaNode):
     __repr__ = __str__
 
 
+class ClassComponentType(SemaNode):
+    def __init__(self, id, elements):
+        self.type_name = '%s.%s' % (id, elements[0])
+        self.type_decl = None
+        self.optional_flag = False
+        self.unique_flag = False
+        self.default = None
+
+        if len(elements) > 1:
+            if elements[1] != 'OPTIONAL':
+                self.type_decl = _create_sema_node(elements[1])
+            else:
+                self.optional_flag = True
+        if len(elements) > 2:
+            if elements[2] == 'UNIQUE':
+                self.unique_flag = True
+            elif elements[2] == 'DEFAULT':
+                self.default = elements[3]
+
+    def __str__(self):
+        flags = ''
+        if self.optional_flag:
+            flags += 'OPTIONAL'
+        if self.unique_flag:
+            flags += 'UNIQUE'
+        if self.default:
+            flags += 'DEFAULT %s' % str(self.default)
+        if flags:
+            flags = ' ' + flags
+        return '%s %s%s' % (self.type_name, self.type_decl, flags)
+
+    __repr__ = __str__
+
+
 class NamedType(SemaNode):
     def __init__(self, elements):
         first_token = elements[0]
@@ -945,6 +1145,10 @@ def _create_sema_node(token):
         return TypeAssignment(token.elements)
     elif token.ty == 'ValueAssignment':
         return ValueAssignment(token.elements)
+    elif token.ty == 'ClassInstanceAssignment':
+        return ClassInstanceAssignment(token.elements)
+    elif token.ty == 'ClassInstanceInlinedListAssignment':
+        return ClassInstanceInlinedListAssignment(token.elements)
     elif token.ty == 'ComponentType':
         return ComponentType(token.elements)
     elif token.ty == 'NamedType':
