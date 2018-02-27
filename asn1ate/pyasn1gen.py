@@ -625,7 +625,8 @@ def _sanitize_identifier(name):
 def _sanitize_module(name):
     """ Sanitize ASN.1 module identifiers so that they're PEP8 compliant identifiers.
     """
-    return _sanitize_identifier(name).lower()
+    module = _sanitize_identifier(name).lower()
+    return module.split()[0]
 
 
 # Simplistic command-line driver
