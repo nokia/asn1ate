@@ -302,7 +302,17 @@ class Module(SemaNode):
                 raise Exception('Unrecognized referenced module %s in %s.' % (type_decl.module_ref.name,
                                                                               [module.name for module in
                                                                                referenced_modules]))
-            return module.resolve_type_decl(module.user_types()[type_decl.type_name], referenced_modules)
+            user_types = module.user_types()
+            ref_type_decl = None
+            if type_decl.type_name in user_types:
+                ref_type_decl = user_types[type_decl.type_name]
+            elif self.imports:
+                for _, imports in self.imports.imports.items():
+                    if type_decl.type_name.replace('-', '_') in imports:
+                        return type_decl
+            if not ref_type_decl:
+                return type_decl
+            return module.resolve_type_decl(ref_type_decl, referenced_modules)
         else:
             return type_decl
 

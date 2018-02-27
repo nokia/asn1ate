@@ -86,6 +86,8 @@ class Pyasn1Backend(object):
         self.sema_module = sema_module
         self.referenced_modules = referenced_modules
         self.writer = pygen.PythonWriter(out_stream)
+        self.assignments_by_name = {a.reference_name(): a for a in self.sema_module.assignments}
+        self.imported_identifiers = []
 
         self.decl_generators = {
             TypeAssignment: self.decl_type_assignment,
@@ -129,6 +131,12 @@ class Pyasn1Backend(object):
                 self.writer.write_line('import ' + _sanitize_module(module.name))
         self.writer.write_blanks(2)
 
+        # Generate module imports
+        imports = self.sema_module.imports
+        if imports:
+            for import_line in self.generate_imports(imports):
+                self.writer.write_line(import_line)
+        self.writer.write_blanks(2)
         # Generate _OID if sema_module contains any object identifier values.
         oids = [n for n in self.sema_module.descendants() if isinstance(n, ObjectIdentifierValue)]
         if oids:
@@ -146,6 +154,14 @@ class Pyasn1Backend(object):
                 if details:
                     self.writer.write_block(details)
                     self.writer.write_blanks(2)
+
+    def generate_imports(self, imports):
+        lines = []
+        for module, items in imports.imports.items():
+            self.imported_identifiers.extend(items)
+            line = 'from .%s import ' % _sanitize_module(module) + ', '.join(items)
+            lines.append(line.replace('-', '_'))
+        return lines
 
     def generate_definition(self, assignment):
         if not isinstance(assignment, (ValueAssignment, TypeAssignment)):
