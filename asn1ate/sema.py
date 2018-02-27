@@ -873,6 +873,16 @@ class ValueRangeConstraint(SemaNode):
     __repr__ = __str__
 
 
+class ContainingConstraint(SemaNode):
+    def __init__(self, elements):
+        self.contained_type = elements
+
+    def __str__(self):
+        return '(CONTAINING %s)' % self.contained_type
+
+    __repr__ = __str__
+
+
 class SizeConstraint(SemaNode):
     """ Size constraints nest single-value or range constraints to denote valid sizes. """
 
@@ -1241,6 +1251,8 @@ def _create_sema_node(token):
         return SizeConstraint(token.elements)
     elif token.ty == 'ValueRangeConstraint':
         return ValueRangeConstraint(token.elements)
+    elif token.ty == 'ContainingConstraint':
+        return ContainingConstraint(token.elements)
     elif token.ty == 'ObjectIdentifierValue':
         return ObjectIdentifierValue(token.elements)
     elif token.ty == 'NameForm':

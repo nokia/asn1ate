@@ -143,6 +143,7 @@ def _build_asn1_grammar():
     INTEGER = Keyword('INTEGER')
     OBJECT_IDENTIFIER = Keyword('OBJECT IDENTIFIER')
     CLASS = Keyword('CLASS')
+    CONTAINING = Keyword('CONTAINING')
 
     # Restricted string types
     BMPString = Keyword('BMPString')
@@ -263,6 +264,7 @@ def _build_asn1_grammar():
     size_constraint = Optional(Suppress('(')) + Suppress(SIZE) + (single_value_constraint | value_range_constraint) + Optional(Suppress(')'))
     class_syntax_element = Optional(Suppress('[')) + OneOrMore(allcaps_identifier) + classreferenceid + Optional(Suppress(']'))
     with_syntax_constraint = Suppress(WITH + SYNTAX + '{') + OneOrMore(class_syntax_element) + Suppress('}')
+    containing_constraint = Suppress('(' + CONTAINING) + typereference + Suppress(')')
 
     # types
     # todo: consider other defined types from 13.1
@@ -293,14 +295,14 @@ def _build_asn1_grammar():
     choice_type = CHOICE + braced_list(named_type | extension_marker)
     selection_type = identifier + Suppress('<') + type_
     enumerated_type = ENUMERATED + braced_list(enumeration | extension_marker)
-    bitstring_type = BIT_STRING + Optional(braced_list(named_number), default=[]) + Optional(single_value_constraint | size_constraint, default=None)
+    bitstring_type = BIT_STRING + Optional(braced_list(named_number), default=[]) + Optional(single_value_constraint | size_constraint | containing_constraint, default=None)
     plain_integer_type = INTEGER
     restricted_integer_type = INTEGER + braced_list(named_number) + Optional(single_value_constraint, default=None)
     boolean_type = BOOLEAN
     real_type = REAL
     null_type = NULL
     object_identifier_type = OBJECT_IDENTIFIER
-    octetstring_type = OCTET_STRING + Optional(size_constraint)
+    octetstring_type = OCTET_STRING + Optional(size_constraint | containing_constraint)
     unrestricted_characterstring_type = CHARACTER_STRING
     restricted_characterstring_type = BMPString | GeneralString | \
                                       GraphicString | IA5String | \
@@ -389,6 +391,7 @@ def _build_asn1_grammar():
     single_value_constraint.setParseAction(annotate('SingleValueConstraint'))
     size_constraint.setParseAction(annotate('SizeConstraint'))
     value_range_constraint.setParseAction(annotate('ValueRangeConstraint'))
+    containing_constraint.setParseAction(annotate('ContainingConstraint'))
     component_type.setParseAction(annotate('ComponentType'))
     component_type_optional.setParseAction(annotate('ComponentTypeOptional'))
     component_type_default.setParseAction(annotate('ComponentTypeDefault'))

@@ -390,9 +390,8 @@ class Pyasn1Backend(object):
 
     def inline_simple_type(self, t):
         type_expr = _translate_type(t.type_name) + '()'
-        if t.constraint:
+        if t.constraint and not isinstance(t.constraint, ContainingConstraint):
             type_expr += '.subtype(subtypeSpec=%s)' % self.build_constraint_expr(t.constraint)
-
         return type_expr
 
     def inline_defined_type(self, t):
@@ -486,6 +485,10 @@ class Pyasn1Backend(object):
         elif isinstance(constraint, ValueRangeConstraint):
             return 'constraint.ValueRangeConstraint(%s, %s)' % (self.translate_value(constraint.min_value),
                                                                 self.translate_value(constraint.max_value))
+        elif isinstance(constraint, ContainingConstraint):
+            # TODO not supported
+            return ''
+
         else:
             raise Exception('Unrecognized constraint type: %s' % constraint.__class__.__name__)
 
