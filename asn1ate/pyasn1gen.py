@@ -137,6 +137,7 @@ class Pyasn1Backend(object):
             for import_line in self.generate_imports(imports):
                 self.writer.write_line(import_line)
         self.writer.write_blanks(2)
+
         # Generate _OID if sema_module contains any object identifier values.
         oids = [n for n in self.sema_module.descendants() if isinstance(n, ObjectIdentifierValue)]
         if oids:
@@ -144,6 +145,7 @@ class Pyasn1Backend(object):
             self.writer.write_blanks(2)
 
         assignment_components = dependency_sort(self.sema_module.assignments)
+
         for component in assignment_components:
             for assignment in component:
                 self.writer.write_block(self.generate_decl(assignment))
@@ -187,8 +189,6 @@ class Pyasn1Backend(object):
         return generator(class_name, t)
 
     def decl_type_assignment(self, assignment):
-        fragment = self.writer.get_fragment()
-
         assigned_type, type_decl = assignment.type_name, assignment.type_decl
 
         if isinstance(type_decl, SelectionType):
@@ -196,6 +196,8 @@ class Pyasn1Backend(object):
 
         assigned_type = _translate_type(assigned_type)
         base_type = _translate_type(type_decl.type_name)
+
+        fragment = self.writer.get_fragment()
         fragment.write_line('class %s(%s):' % (assigned_type, base_type))
         fragment.push_indent()
         fragment.write_line('pass')
@@ -206,7 +208,13 @@ class Pyasn1Backend(object):
     def decl_value_assignment(self, assignment):
         assigned_value, type_decl, value = assignment.value_name, assignment.type_decl, assignment.value
         assigned_value = _sanitize_identifier(assigned_value)
-        construct_expr = self.build_value_construct_expr(type_decl, value)
+
+        translated_value = self.translate_value(value)
+        if _unsanitize_identifier(translated_value) in self.assignments_by_name:
+            construct_expr = translated_value
+        else:
+            construct_expr = self.build_value_construct_expr(type_decl, value)
+
         return '%s = %s' % (assigned_value, construct_expr)
 
     def defn_simple_type(self, class_name, t):
@@ -260,7 +268,7 @@ class Pyasn1Backend(object):
             fragment.write_line('%s.namedValues = namedval.NamedValues(' % class_name)
             fragment.push_indent()
 
-            named_values = ['(\'%s\', %s)' % (v.identifier, v.value) for v in t.named_values if
+            named_values = ['(\'%s\', %s)' % (_sanitize_identifier(v.identifier), _sanitize_identifier(v.value)) for v in t.named_values if
                             not isinstance(v, ExtensionMarker)]
             fragment.write_enumeration(named_values)
 
@@ -281,7 +289,7 @@ class Pyasn1Backend(object):
         if t.named_bits:
             fragment.write_line('%s.namedValues = namedval.NamedValues(' % class_name)
             fragment.push_indent()
-            named_bits = ['(\'%s\', %s)' % (b.identifier, b.value) for b in t.named_bits]
+            named_bits = ['(\'%s\', %s)' % (_sanitize_identifier(b.identifier), _sanitize_identifier(b.value)) for b in t.named_bits]
             fragment.write_enumeration(named_bits)
             fragment.pop_indent()
             fragment.write_line(')')
@@ -448,7 +456,7 @@ class Pyasn1Backend(object):
     def inline_value_list_type(self, t):
         class_name = _translate_type(t.type_name)
         if t.named_values:
-            named_values = ['(\'%s\', %s)' % (v.identifier, v.value) for v in t.named_values if
+            named_values = ['(\'%s\', %s)' % (_sanitize_identifier(v.identifier), _sanitize_identifier(v.value)) for v in t.named_values if
                             not isinstance(v, ExtensionMarker)]
             return '%s(namedValues=namedval.NamedValues(%s))' % (class_name, ', '.join(named_values))
         else:
@@ -515,6 +523,10 @@ class Pyasn1Backend(object):
         """ Translate ASN.1 built-in values to Python equivalents.
         Unrecognized values are not translated.
         """
+        if isinstance(value, BinaryStringValue) or isinstance(value, HexStringValue):
+            return "'%s'" % value.value
+
+        v = None
         if isinstance(value, ReferencedValue):
             v = _sanitize_identifier(value.name)
 
@@ -527,13 +539,28 @@ class Pyasn1Backend(object):
 
             if module and module != self.sema_module.name:
                 v = _sanitize_module(module) + '.' + v
+
+            if value.name not in self.assignments_by_name and value.name not in self.imported_identifiers:
+                v = "'%s'" % v
+
         elif _heuristic_is_identifier(value):
             v = _sanitize_identifier(value)
-        else:
-            v = value
 
-        return _ASN1_BUILTIN_VALUES.get(v, v)
+        if v is not None:
+            return _ASN1_BUILTIN_VALUES.get(v, v)
 
+        if _unsanitize_identifier(value) in self.assignments_by_name:
+            return value
+
+        try:
+            return str(int(value))
+        except ValueError:
+            pass
+
+        if isinstance(value, str):
+            return "'%s'" % value
+
+        return "%s" % value
 
 def generate_pyasn1(sema_module, out_stream, referenced_modules):
     return Pyasn1Backend(sema_module, out_stream, referenced_modules).generate_code()
@@ -548,7 +575,8 @@ _ASN1_TAG_CONTEXTS = {
 
 _ASN1_BUILTIN_VALUES = {
     'FALSE': '0',
-    'TRUE': '1'
+    'TRUE': '1',
+    'NULL': 'None'
 }
 
 _ASN1_BUILTIN_TYPES = {
@@ -622,11 +650,32 @@ def _sanitize_identifier(name):
     return name
 
 
+def _unsanitize_identifier(name):
+    """ Unsanitize Python identifiers so they become ASN.1 identifiers.
+    """
+    name = name.replace('__', '.&')
+    if name.endswith('_'):
+        name = name[:-1]
+    name = name.replace('_', '-')
+
+    return name
+
+
 def _sanitize_module(name):
     """ Sanitize ASN.1 module identifiers so that they're PEP8 compliant identifiers.
     """
     module = _sanitize_identifier(name).lower()
     return module.split()[0]
+
+
+def _sanitize_asn1(data):
+    output = []
+    for data_line in data.splitlines():
+        data_line = data_line.replace('--', ' --')
+        data_line = data_line.replace('::=', ' ::=')
+        data_line = data_line.replace('BIT  STRING', 'BIT STRING')
+        output.append(data_line)
+    return "\n".join(output)
 
 
 # Simplistic command-line driver
@@ -641,7 +690,7 @@ def main():
     with open(args.file, 'r') as data:
         asn1def = data.read()
 
-    parse_tree = parser.parse_asn1(asn1def)
+    parse_tree = parser.parse_asn1(_sanitize_asn1(asn1def))
 
     modules = build_semantic_model(parse_tree)
     if len(modules) > 1 and not args.split:

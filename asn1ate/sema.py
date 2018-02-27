@@ -785,12 +785,15 @@ class ValueListType(SemaNode):
         self.type_name = elements[0]
 
         self.named_values = [_create_sema_node(token) for token in elements[1]]
+
+        next_value = 0
         for idx, n in enumerate(self.named_values):
-            if isinstance(n, NamedValue) and n.value is None:
-                if idx == 0:
-                    n.value = str(0)
+            if isinstance(n, NamedValue):
+                if n.value is None:
+                    n.value = str(next_value)
+                    next_value = next_value + 1
                 else:
-                    n.value = str(int(self.named_values[idx - 1].value) + 1)
+                    next_value = int(n.value) + 1
 
         if len(elements) > 2:
             self.constraint = _maybe_create_sema_node(elements[2])
