@@ -26,7 +26,7 @@
 import re
 from copy import copy
 from pyparsing import Keyword, Literal, Word, OneOrMore, ZeroOrMore, Combine, Regex, Forward, Optional, Group, Suppress, \
-    delimitedList, cStyleComment, nums, srange, dblQuotedString, Or, CaselessLiteral
+    delimitedList, cStyleComment, nums, srange, dblQuotedString, Or, CaselessLiteral, FollowedBy, White
 
 __all__ = ['parse_asn1', 'AnnotatedToken']
 
@@ -125,6 +125,9 @@ def _build_asn1_grammar():
     IMPORTS = Keyword('IMPORTS')
     EXPORTS = Keyword('EXPORTS')
     FROM = Keyword('FROM')
+    UNIQUE = Keyword('UNIQUE')
+    WITH = Keyword('WITH')
+    SYNTAX = Keyword('SYNTAX')
 
     # Built-in types
     SEQUENCE = Keyword('SEQUENCE')
@@ -139,6 +142,7 @@ def _build_asn1_grammar():
     NULL = Keyword('NULL')
     INTEGER = Keyword('INTEGER')
     OBJECT_IDENTIFIER = Keyword('OBJECT IDENTIFIER')
+    CLASS = Keyword('CLASS')
 
     # Restricted string types
     BMPString = Keyword('BMPString')
@@ -175,10 +179,13 @@ def _build_asn1_grammar():
 
     # references
     # these are duplicated to force unique token annotations
+    classreferenceid = build_identifier('[&]')
     valuereference = build_identifier('[a-z]')
     typereference = build_identifier('[A-Z]')
     module_reference = build_identifier('[A-Z]')
     reference = valuereference | typereference  # TODO: consider object references from 12.1
+    allcaps_identifier = Word(srange('[-0-9A-Z]')) + FollowedBy(White())
+    alphanum_identifier = Word(srange('[-0-9a-zA-Z]'))
 
     # values
     # todo: consider more literals from 16.9
@@ -210,6 +217,9 @@ def _build_asn1_grammar():
                               (objid_components_list | (defined_value + objid_components_list)) + \
                               Suppress('}')
 
+    class_instance = Suppress('{') + OneOrMore(OneOrMore(allcaps_identifier) + (typereference | valuereference)) + Suppress('}')
+    class_instance_inlined_list = braced_list(delimitedList(class_instance, delim=Word('|', exact=1)) | Suppress(ELLIPSIS))
+    class_instance_list = braced_list(delimitedList(alphanum_identifier, delim=Word('|', exact=1)) | Suppress(ELLIPSIS))
     value = builtin_value | referenced_value | object_identifier_value
 
     # definitive identifier value
@@ -243,10 +253,14 @@ def _build_asn1_grammar():
     value_range_constraint = Suppress('(') + lower_bound + Suppress('..') + upper_bound + Suppress(')')
     # TODO: Include contained subtype constraint here if we ever implement it.
     size_constraint = Optional(Suppress('(')) + Suppress(SIZE) + (single_value_constraint | value_range_constraint) + Optional(Suppress(')'))
+    class_syntax_element = Optional(Suppress('[')) + OneOrMore(allcaps_identifier) + classreferenceid + Optional(Suppress(']'))
+    with_syntax_constraint = Suppress(WITH + SYNTAX + '{') + OneOrMore(class_syntax_element) + Suppress('}')
 
     # types
     # todo: consider other defined types from 13.1
-    defined_type = Optional(module_reference + Suppress('.'), default=None) + typereference + Optional(size_constraint, default=None)
+    defined_type = Optional(module_reference + Suppress('.'), default=None) +\
+                        typereference + Optional(size_constraint, default=None) |\
+                   (typereference + Suppress('.') + classreferenceid)
 
     # TODO: consider exception syntax from 24.1
     extension_marker = Unique(ELLIPSIS)
@@ -255,6 +269,7 @@ def _build_asn1_grammar():
     component_type_default = named_type + Suppress(DEFAULT) + value
     component_type_components_of = Suppress(COMPONENTS_OF) + type_
     component_type = component_type_components_of | component_type_optional | component_type_default | named_type
+    class_component_type = classreferenceid + Optional(OPTIONAL | (type_ + Optional(UNIQUE | (DEFAULT + value))))
 
     tagged_type = tag + Optional(IMPLICIT | EXPLICIT, default=None) + type_
 
@@ -288,13 +303,14 @@ def _build_asn1_grammar():
                                       VisibleString
     characterstring_type = (restricted_characterstring_type | unrestricted_characterstring_type) + Optional(size_constraint)
     useful_type = GeneralizedTime | UTCTime | ObjectDescriptor
+    class_type = CLASS + braced_list(class_component_type) + Optional(Group(with_syntax_constraint), default=[])
 
     # ANY type
     any_type = ANY + Optional(Suppress(DEFINED_BY + identifier))
 
     # todo: consider other builtins from 16.2
     simple_type = (any_type | boolean_type | null_type | octetstring_type | characterstring_type | real_type | plain_integer_type | object_identifier_type | useful_type) + Optional(value_range_constraint | single_value_constraint)
-    constructed_type = choice_type | sequence_type | set_type
+    constructed_type = choice_type | sequence_type | set_type | class_type
     value_list_type = restricted_integer_type | enumerated_type
     builtin_type = value_list_type | tagged_type | simple_type | constructed_type | sequenceof_type | setof_type | bitstring_type
 
@@ -310,7 +326,12 @@ def _build_asn1_grammar():
     type_assignment = typereference + '::=' + type_
     value_assignment = valuereference + type_ + '::=' + value
 
-    assignment = type_assignment | value_assignment
+    class_instance_list_assignment = alphanum_identifier + allcaps_identifier + '::=' + class_instance_list
+    class_instance_assignment = alphanum_identifier + allcaps_identifier + '::=' + class_instance
+    class_instance_inlined_list_assignment = alphanum_identifier + allcaps_identifier + '::=' + class_instance_inlined_list
+    class_assignment = Suppress(class_instance_list_assignment) | class_instance_assignment | class_instance_inlined_list_assignment
+
+    assignment = type_assignment | value_assignment | class_assignment
     assignment_list = ZeroOrMore(assignment)
 
     # TODO: Maybe handle full assigned-identifier syntax with defined values
@@ -349,6 +370,12 @@ def _build_asn1_grammar():
     bitstring_type.setParseAction(annotate('BitStringType'))
     sequenceof_type.setParseAction(annotate('SequenceOfType'))
     setof_type.setParseAction(annotate('SetOfType'))
+    class_type.setParseAction(annotate('ClassType'))
+    class_component_type.setParseAction(annotate('ClassComponentType'))
+    class_instance.setParseAction(annotate('ClassInstance'))
+    class_instance_inlined_list.setParseAction(annotate('ClassInstanceInlinedList'))
+    class_instance_assignment.setParseAction(annotate('ClassInstanceAssignment'))
+    class_instance_inlined_list_assignment.setParseAction(annotate('ClassInstanceInlinedListAssignment'))
     named_number.setParseAction(annotate('NamedValue'))
     named_nonumber.setParseAction(annotate('NamedValue'))
     single_value_constraint.setParseAction(annotate('SingleValueConstraint'))
