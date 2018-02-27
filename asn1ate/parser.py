@@ -260,8 +260,11 @@ def _build_asn1_grammar():
     upper_bound = (constraint_real_value | signed_number | referenced_value | MAX)
     single_value_constraint = Suppress('(') + value + Optional(Suppress(',') + ELLIPSIS) + Suppress(')')
     value_range_constraint = Suppress('(') + lower_bound + Suppress('..') + upper_bound + Optional(Suppress(',') + ELLIPSIS) + Suppress(')')
+    mixed_single_and_value_range_constraint = Suppress('(') + delimitedList(Group((lower_bound + Suppress('..') + upper_bound)) | value, delim=Word('|', exact=1)) + Suppress(')')
+    multi_single_value_constraint = Suppress('(') + delimitedList(value, '|') + Suppress(')')
+    multi_value_range_constraint = Suppress('(') + delimitedList(Group(lower_bound + Suppress('..') + upper_bound) | Suppress(ELLIPSIS), ',') + Suppress(')')
     # TODO: Include contained subtype constraint here if we ever implement it.
-    size_constraint = Optional(Suppress('(')) + Suppress(SIZE) + (single_value_constraint | value_range_constraint) + Optional(Suppress(')'))
+    size_constraint = Optional(Suppress('(')) + Suppress(SIZE) + (single_value_constraint | value_range_constraint | multi_single_value_constraint) + Optional(Suppress(')'))
     class_syntax_element = Optional(Suppress('[')) + OneOrMore(allcaps_identifier) + classreferenceid + Optional(Suppress(']'))
     with_syntax_constraint = Suppress(WITH + SYNTAX + '{') + OneOrMore(class_syntax_element) + Suppress('}')
     containing_constraint = Suppress('(' + CONTAINING) + typereference + Suppress(')')
@@ -297,7 +300,7 @@ def _build_asn1_grammar():
     enumerated_type = ENUMERATED + braced_list(enumeration | extension_marker)
     bitstring_type = BIT_STRING + Optional(braced_list(named_number), default=[]) + Optional(single_value_constraint | size_constraint | containing_constraint, default=None)
     plain_integer_type = INTEGER
-    restricted_integer_type = INTEGER + braced_list(named_number) + Optional(single_value_constraint, default=None)
+    restricted_integer_type = INTEGER + braced_list(named_number) + Optional(single_value_constraint | value_range_constraint | mixed_single_and_value_range_constraint, default=None)
     boolean_type = BOOLEAN
     real_type = REAL
     null_type = NULL
@@ -319,7 +322,7 @@ def _build_asn1_grammar():
     any_type = ANY + Optional(Suppress(DEFINED_BY + identifier))
 
     # todo: consider other builtins from 16.2
-    simple_type = (any_type | boolean_type | null_type | octetstring_type | characterstring_type | real_type | plain_integer_type | object_identifier_type | useful_type) + Optional(value_range_constraint | single_value_constraint)
+    simple_type = (any_type | boolean_type | null_type | octetstring_type | characterstring_type | real_type | plain_integer_type | object_identifier_type | useful_type) + Optional(value_range_constraint | single_value_constraint | mixed_single_and_value_range_constraint | multi_value_range_constraint)
     constructed_type = choice_type | sequence_type | set_type | class_type
     value_list_type = restricted_integer_type | enumerated_type
     builtin_type = value_list_type | tagged_type | simple_type | constructed_type | sequenceof_type | setof_type | bitstring_type
@@ -391,6 +394,9 @@ def _build_asn1_grammar():
     single_value_constraint.setParseAction(annotate('SingleValueConstraint'))
     size_constraint.setParseAction(annotate('SizeConstraint'))
     value_range_constraint.setParseAction(annotate('ValueRangeConstraint'))
+    mixed_single_and_value_range_constraint.setParseAction(annotate('MixedSingleAndValueRangeConstraint'))
+    multi_single_value_constraint.setParseAction(annotate('MultiSingleValueConstraint'))
+    multi_value_range_constraint.setParseAction(annotate('MultiValueRangeConstraint'))
     containing_constraint.setParseAction(annotate('ContainingConstraint'))
     component_type.setParseAction(annotate('ComponentType'))
     component_type_optional.setParseAction(annotate('ComponentTypeOptional'))

@@ -873,6 +873,58 @@ class ValueRangeConstraint(SemaNode):
     __repr__ = __str__
 
 
+class MixedSingleAndValueRangeConstraint(SemaNode):
+    def __init__(self, elements):
+        self.ranges = []
+        for val in elements:
+            if isinstance(val, list):
+                self.ranges.append((_maybe_create_sema_node(val[0]), _maybe_create_sema_node(val[1])))
+            else:
+                self.ranges.append((_maybe_create_sema_node(val), _maybe_create_sema_node(val)))
+
+    def __str__(self):
+        def convert(val):
+            if val[0] == val[1]:
+                return val[0]
+            else:
+                return '%s..%s' % val
+
+        return '(%s)' % '|'.join([convert(val) for val in self.ranges])
+
+    def reference_name(self):
+        refs = []
+        for min, max in self.ranges:
+            if isinstance(min, SemaNode) and hasattr(min, 'reference_name'):
+                refs.append(min.reference_name())
+            if isinstance(max, SemaNode) and hasattr(max, 'reference_name'):
+                refs.append(max.reference_name())
+        return refs
+
+    __repr__ = __str__
+
+
+class MultiSingleValueConstraint(SemaNode):
+    def __init__(self, elements):
+        self.values = [_maybe_create_sema_node(val) for val in elements]
+
+    def __str__(self):
+        return '(%s)' % '|'.join(self.values)
+
+    __repr__ = __str__
+
+
+class MultiValueRangeConstraint(SemaNode):
+    def __init__(self, elements):
+        self.ranges = []
+        for val in elements:
+            self.ranges.append((_maybe_create_sema_node(val[0]), _maybe_create_sema_node(val[1])))
+
+    def __str__(self):
+        return '(%s)' % ',...,'.join('%s..%s' % val for val in self.ranges)
+
+    __repr__ = __str__
+
+
 class ContainingConstraint(SemaNode):
     def __init__(self, elements):
         self.contained_type = elements
@@ -888,7 +940,8 @@ class SizeConstraint(SemaNode):
 
     def __init__(self, elements):
         self.nested = _create_sema_node(elements[0])
-        if not isinstance(self.nested, (ValueRangeConstraint, SingleValueConstraint)):
+        if not isinstance(self.nested, (ValueRangeConstraint, SingleValueConstraint,
+                                        MultiSingleValueConstraint)):
             raise Exception('Unexpected size constraint type %s' % self.nested.__class__.__name__)
 
     def __str__(self):
@@ -1251,6 +1304,12 @@ def _create_sema_node(token):
         return SizeConstraint(token.elements)
     elif token.ty == 'ValueRangeConstraint':
         return ValueRangeConstraint(token.elements)
+    elif token.ty == 'MixedSingleAndValueRangeConstraint':
+        return MixedSingleAndValueRangeConstraint(token.elements)
+    elif token.ty == 'MultiSingleValueConstraint':
+        return MultiSingleValueConstraint(token.elements)
+    elif token.ty == 'MultiValueRangeConstraint':
+        return MultiValueRangeConstraint(token.elements)
     elif token.ty == 'ContainingConstraint':
         return ContainingConstraint(token.elements)
     elif token.ty == 'ObjectIdentifierValue':

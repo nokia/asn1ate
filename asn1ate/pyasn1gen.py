@@ -474,6 +474,8 @@ class Pyasn1Backend(object):
                 return self.translate_value(nested.value), self.translate_value(nested.value)
             elif isinstance(nested, ValueRangeConstraint):
                 return self.translate_value(nested.min_value), self.translate_value(nested.max_value)
+            elif isinstance(nested, MultiSingleValueConstraint):
+                return nested.values, None
             else:
                 raise Exception('Unrecognized nested size constraint type: %s' % nested.__class__.__name__)
 
@@ -481,10 +483,32 @@ class Pyasn1Backend(object):
             return 'constraint.SingleValueConstraint(%s)' % (self.translate_value(constraint.value))
         elif isinstance(constraint, SizeConstraint):
             min_value, max_value = unpack_size_constraint(constraint.nested)
-            return 'constraint.ValueSizeConstraint(%s, %s)' % (self.translate_value(min_value), self.translate_value(max_value))
+            if isinstance(min_value, list):
+                result = 'constraint.ConstraintsUnion('
+                result += ', '.join(['constraint.ValueSizeConstraint(%s, %s)' %
+                                     (self.translate_value(val), self.translate_value(val))
+                                     for val in min_value])
+                result += ')'
+                return result
+            else:
+                return 'constraint.ValueSizeConstraint(%s, %s)' % (self.translate_value(min_value), self.translate_value(max_value))
         elif isinstance(constraint, ValueRangeConstraint):
             return 'constraint.ValueRangeConstraint(%s, %s)' % (self.translate_value(constraint.min_value),
                                                                 self.translate_value(constraint.max_value))
+        elif isinstance(constraint, MixedSingleAndValueRangeConstraint):
+            return 'constraint.ConstraintsUnion(%s)' % (
+                ', '.join(['constraint.ValueRangeConstraint(%s, %s)' %
+                           (self.translate_value(val[0]), self.translate_value(val[1]))
+                           for val in constraint.ranges])
+            )
+
+        elif isinstance(constraint, MultiValueRangeConstraint):
+            return 'constraint.ConstraintsUnion(%s)' % (
+                ', '.join(['constraint.ValueRangeConstraint(%s, %s)' %
+                           (self.translate_value(val[0]), self.translate_value(val[1]))
+                           for val in constraint.ranges])
+            )
+
         elif isinstance(constraint, ContainingConstraint):
             # TODO not supported
             return ''
