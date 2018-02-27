@@ -10,16 +10,18 @@
 
 set -e
 
-export PYTHONPATH=`pwd`
+#export PYTHONPATH=`pwd`
 for f in testdata/*.asn;
 do
     echo "Checking $f";
     rm -rf _testdir/
     mkdir -p _testdir/
+    touch _testdir/__init__.py
     python asn1ate/test.py --outdir=_testdir $f
     # Run python over _testdir/*.py
     for m in _testdir/*.py;
     do
-        python $m
+        m=${m##*/}
+        python -m _testdir.${m%.*} || true
     done
 done
