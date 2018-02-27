@@ -217,10 +217,18 @@ def _build_asn1_grammar():
                               (objid_components_list | (defined_value + objid_components_list)) + \
                               Suppress('}')
 
-    class_instance = Suppress('{') + OneOrMore(OneOrMore(allcaps_identifier) + (typereference | valuereference)) + Suppress('}')
+    # constructed value
+    constructed_value = braced_list(Group(identifier + valuereference))
+
+    # choice value
+    choice_value = identifier + Suppress(':') + valuereference
+
+    # defined class instances
+    class_instance = Suppress('{') + OneOrMore(OneOrMore(allcaps_identifier) + (typereference | choice_value | valuereference | constructed_value)) + Suppress('}')
     class_instance_inlined_list = braced_list(delimitedList(class_instance, delim=Word('|', exact=1)) | Suppress(ELLIPSIS))
     class_instance_list = braced_list(delimitedList(alphanum_identifier, delim=Word('|', exact=1)) | Suppress(ELLIPSIS))
-    value = builtin_value | referenced_value | object_identifier_value
+
+    value = builtin_value | referenced_value | object_identifier_value | constructed_value
 
     # definitive identifier value
     definitive_number_form = Unique(number)
@@ -409,6 +417,8 @@ def _build_asn1_grammar():
     defined_type.setParseAction(annotate('DefinedType'))
     selection_type.setParseAction(annotate('SelectionType'))
     referenced_value.setParseAction(annotate('ReferencedValue'))
+    constructed_value.setParseAction(annotate('ConstructedValue'))
+    choice_value.setParseAction(annotate('ChoiceValue'))
 
     start = OneOrMore(module_definition)
     return start

@@ -134,6 +134,7 @@ class Pyasn1Backend(object):
 
     def generate_code(self):
         self.writer.write_line('from pyasn1.type import univ, char, namedtype, namedval, tag, constraint, useful')
+        self.writer.write_line('from pyasn1.codec.native.decoder import decode')
         for module in self.referenced_modules:
             if module is not self.sema_module:
                 self.writer.write_line('import ' + _sanitize_module(module.name))
@@ -293,11 +294,15 @@ class Pyasn1Backend(object):
             for k, v in t.components.items():
                 k = self.class_syntax_map[class_name][k]
                 type_decl = self.sema_module.get_type_decl(_unsanitize_identifier(k))
-                if not (v in self.assignments_by_name or v in self.imported_identifiers):
-                    v = "'%s'" % v
+                if isinstance(v, ConstructedValue) or isinstance(v, ChoiceValue):
+                    v = self.build_value_construct_expr(type_decl, v)
+                    fragment.write_line("'%s': %s," % (k, v))
                 else:
-                    v = self.translate_value(v)
-                fragment.write_line("'%s': %s(%s)," % (k, k, v))
+                    if not (v in self.assignments_by_name or v in self.imported_identifiers):
+                        v = "'%s'" % v
+                    else:
+                        v = self.translate_value(v)
+                    fragment.write_line("'%s': %s(%s)," % (k, k, v))
         except KeyError:
             raise KeyError("%s => %s" % (class_name, t))
 
@@ -511,7 +516,10 @@ class Pyasn1Backend(object):
         else:
             value_type = _translate_type(type_decl.type_name)
             root_type = self.sema_module.resolve_type_decl(type_decl, self.referenced_modules)
-            return '%s(%s)' % (value_type, build_value_expr(root_type.type_name, value))
+            if isinstance(value, ConstructedValue) or isinstance(value, ChoiceValue):
+                return 'decode(%s, asn1Spec=%s())' % (build_value_expr(root_type.type_name, value), value_type)
+            else:
+                return '%s(%s)' % (value_type, build_value_expr(root_type.type_name, value))
 
     def inline_component_type(self, t):
         if t.components_of_type:
@@ -607,8 +615,26 @@ class Pyasn1Backend(object):
         """ Translate ASN.1 built-in values to Python equivalents.
         Unrecognized values are not translated.
         """
+        def wrap_unknown_values(val):
+            fmt = "%s"
+            if not (val in self.assignments_by_name or val in self.imported_identifiers):
+                fmt = "'%s'"
+            return fmt % self.translate_value(val)
+
         if isinstance(value, BinaryStringValue) or isinstance(value, HexStringValue):
             return "'%s'" % value.value
+
+        if isinstance(value, ConstructedValue):
+            res = []
+            for key, val in value.values:
+                rs = "'%s' : " % key
+                rs += wrap_unknown_values(val)
+                res.append(rs)
+            return "{%s}" % (', '.join(res))
+
+        elif isinstance(value, ChoiceValue):
+            key, val = value.type_name, value.value
+            return "{'%s' : %s}" % (key, wrap_unknown_values(val))
 
         v = None
         if isinstance(value, ReferencedValue):

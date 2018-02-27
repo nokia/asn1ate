@@ -24,6 +24,7 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from asn1ate import parser
+from asn1ate.parser import AnnotatedToken
 
 
 def build_semantic_model(parse_result):
@@ -676,7 +677,10 @@ class ClassInstance(ConstructedType):
 
         refs = []
         for val in self.components.values():
-            refs.append(val)
+            if isinstance(val, ConstructedValue) or isinstance(val, ChoiceValue):
+                refs.extend(val.references())
+            else:
+                refs.append(val)
         refs = set(refs)
 
         return refs
@@ -786,6 +790,8 @@ class ReferencedType(SemaNode):
 
 class DefinedType(ReferencedType):
     def __init__(self, elements):
+        if len(elements) < 3:
+            elements = [None, '.'.join(elements), None]
         module_ref, type_ref, size_constraint = elements
         self.module_ref = _maybe_create_sema_node(module_ref)
         self.type_name = type_ref
@@ -1051,6 +1057,46 @@ class NamedValue(SemaNode):
     __repr__ = __str__
 
 
+class ConstructedValue(SemaNode):
+
+    def __init__(self, elements):
+        self.values = []
+        for element in elements[0]:
+            self.values.append((element[0].elements[0], element[1]))
+
+    def __str__(self):
+        return "{%s}" % ', '.join(["'%s' : %s" % val for val in self.values])
+
+    def references(self):
+        refs = []
+        for _, ref in self.values:
+            refs.append(ref)
+        return refs
+
+    __repr__ = __str__
+
+
+class ChoiceValue(SemaNode):
+    def __init__(self, elements):
+        self.type_name = elements[0]
+        if isinstance(self.type_name, parser.AnnotatedToken):
+            self.type_name = self.type_name.elements[0]
+        self.value = _maybe_create_sema_node(elements[1])
+
+    def references(self):
+        refs = []
+        if isinstance(self.value, SemaNode):
+            refs.append(self.value.type_name)
+        else:
+            refs.append(self.value)
+        return refs
+
+    def __str__(self):
+        return "{'%s':%s}" % (self.type_name, self.value)
+
+    __repr__ = __str__
+
+
 class ExtensionMarker(SemaNode):
     def __init__(self, elements):
         pass
@@ -1159,6 +1205,10 @@ def _create_sema_node(token):
         return BitStringType(token.elements)
     elif token.ty == 'NamedValue':
         return NamedValue(token.elements)
+    elif token.ty == 'ChoiceValue':
+        return ChoiceValue(token.elements)
+    elif token.ty == 'ConstructedValue':
+        return ConstructedValue(token.elements)
     elif token.ty == 'Type':
         # Type tokens have a more specific type category
         # embedded as their first element
