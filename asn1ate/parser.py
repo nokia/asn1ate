@@ -258,8 +258,8 @@ def _build_asn1_grammar():
     # todo: consider the full subtype and general constraint syntax described in 45.*
     lower_bound = (constraint_real_value | signed_number | referenced_value | MIN)
     upper_bound = (constraint_real_value | signed_number | referenced_value | MAX)
-    single_value_constraint = Suppress('(') + value + Suppress(')')
-    value_range_constraint = Suppress('(') + lower_bound + Suppress('..') + upper_bound + Suppress(')')
+    single_value_constraint = Suppress('(') + value + Optional(Suppress(',') + ELLIPSIS) + Suppress(')')
+    value_range_constraint = Suppress('(') + lower_bound + Suppress('..') + upper_bound + Optional(Suppress(',') + ELLIPSIS) + Suppress(')')
     # TODO: Include contained subtype constraint here if we ever implement it.
     size_constraint = Optional(Suppress('(')) + Suppress(SIZE) + (single_value_constraint | value_range_constraint) + Optional(Suppress(')'))
     class_syntax_element = Optional(Suppress('[')) + OneOrMore(allcaps_identifier) + classreferenceid + Optional(Suppress(']'))
